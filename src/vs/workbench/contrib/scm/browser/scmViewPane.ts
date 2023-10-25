@@ -2490,7 +2490,7 @@ export class SCMViewPane extends ViewPane {
 class SCMTreeDataSource implements IAsyncDataSource<ISCMViewService, TreeElement> {
 
 	constructor(
-		private readonly viewModel: () => ViewModel,
+		private readonly viewModel: () => ViewModel | undefined,
 		@ISCMViewService private readonly scmViewService: ISCMViewService) { }
 
 	hasChildren(inputOrElement: ISCMViewService | TreeElement): boolean {
@@ -2514,13 +2514,17 @@ class SCMTreeDataSource implements IAsyncDataSource<ISCMViewService, TreeElement
 	}
 
 	getChildren(inputOrElement: ISCMViewService | TreeElement): Iterable<TreeElement> | Promise<Iterable<TreeElement>> {
+		if (this.viewModel() === undefined) {
+			return [];
+		}
+
 		if (isSCMViewService(inputOrElement)) {
 			return this.scmViewService.visibleRepositories;
 		} else if (isSCMRepository(inputOrElement)) {
 			const children: TreeElement[] = [];
 
 			const provider = inputOrElement.provider;
-			const showActionButton = this.viewModel().showActionButton;
+			const showActionButton = this.viewModel()!.showActionButton;
 			const repositoryCount = this.scmViewService.visibleRepositories.length;
 
 			// SCM Input
@@ -2545,10 +2549,10 @@ class SCMTreeDataSource implements IAsyncDataSource<ISCMViewService, TreeElement
 
 			return children;
 		} else if (isSCMResourceGroup(inputOrElement)) {
-			if (this.viewModel().mode === ViewModelMode.List) {
+			if (this.viewModel()!.mode === ViewModelMode.List) {
 				// Resources (List)
 				return inputOrElement.resources;
-			} else if (this.viewModel().mode === ViewModelMode.Tree) {
+			} else if (this.viewModel()!.mode === ViewModelMode.Tree) {
 				// Resources (Tree)
 				return inputOrElement.resourceTree.root.children;
 			}
