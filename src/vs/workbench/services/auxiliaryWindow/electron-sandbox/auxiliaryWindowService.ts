@@ -5,52 +5,73 @@
 
 import { InstantiationType, registerSingleton } from 'vs/platform/instantiation/common/extensions';
 import { IWorkbenchLayoutService } from 'vs/workbench/services/layout/browser/layoutService';
-import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
-import { BrowserAuxiliaryWindowService, IAuxiliaryWindowService } from 'vs/workbench/services/auxiliaryWindow/browser/auxiliaryWindowService';
+import { BrowserAuxiliaryWindowService, IAuxiliaryWindowService, AuxiliaryWindow as BaseAuxiliaryWindow } from 'vs/workbench/services/auxiliaryWindow/browser/auxiliaryWindowService';
+import { ISandboxGlobals } from 'vs/base/parts/sandbox/electron-sandbox/globals';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
+import { IWindowsConfiguration } from 'vs/platform/window/common/window';
+import { DisposableStore } from 'vs/base/common/lifecycle';
+import { INativeHostService } from 'vs/platform/native/common/native';
+import { IDialogService } from 'vs/platform/dialogs/common/dialogs';
+import { getActiveWindow } from 'vs/base/browser/dom';
 
-type AuxiliaryWindow = Window & typeof globalThis & {
-	vscode: {
-		ipcRenderer: Pick<import('vs/base/parts/sandbox/electron-sandbox/electronTypes').IpcRenderer, 'send'>;
-	};
-	moveTop: () => void;
+type AuxiliaryWindow = BaseAuxiliaryWindow & {
+	readonly vscode: ISandboxGlobals;
+	readonly vscodeWindowId: number;
 };
 
 export function isAuxiliaryWindow(obj: unknown): obj is AuxiliaryWindow {
 	const candidate = obj as AuxiliaryWindow | undefined;
 
-	return typeof candidate?.vscode?.ipcRenderer?.send === 'function';
+	return !!candidate?.vscode && Object.hasOwn(candidate, 'vscodeWindowId');
 }
 
 export class NativeAuxiliaryWindowService extends BrowserAuxiliaryWindowService {
 
 	constructor(
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
-		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@IDialogService dialogService: IDialogService
 	) {
-		super(layoutService, environmentService);
+		super(layoutService, dialogService);
+	}
+
+	protected override create(auxiliaryWindow: AuxiliaryWindow, disposables: DisposableStore) {
+
+		// Zoom level
+		const windowConfig = this.configurationService.getValue<IWindowsConfiguration>();
+		const windowZoomLevel = typeof windowConfig.window?.zoomLevel === 'number' ? windowConfig.window.zoomLevel : 0;
+		auxiliaryWindow.vscode.webFrame.setZoomLevel(windowZoomLevel);
+
+		return super.create(auxiliaryWindow, disposables);
 	}
 
 	protected override patchMethods(auxiliaryWindow: AuxiliaryWindow): void {
 		super.patchMethods(auxiliaryWindow);
 
+		// Obtain window identifier
+		let resolvedWindowId: number;
+		(async () => {
+			resolvedWindowId = await auxiliaryWindow.vscode.ipcRenderer.invoke('vscode:getWindowId');
+		})();
+
+		// Add a `windowId` property
+		Object.defineProperty(auxiliaryWindow, 'vscodeWindowId', {
+			get: () => resolvedWindowId
+		});
+
 		// Enable `window.focus()` to work in Electron by
 		// asking the main process to focus the window.
+		// https://github.com/electron/electron/issues/25578
+		const that = this;
 		const originalWindowFocus = auxiliaryWindow.focus.bind(auxiliaryWindow);
 		auxiliaryWindow.focus = function () {
 			originalWindowFocus();
 
-			auxiliaryWindow.vscode.ipcRenderer.send('vscode:focusAuxiliaryWindow');
+			if (getActiveWindow() !== auxiliaryWindow) {
+				that.nativeHostService.focusWindow({ targetWindowId: resolvedWindowId });
+			}
 		};
-
-		// Add a method to move window to the top (TODO@bpasero better to go entirely through native host service)
-		Object.defineProperty(auxiliaryWindow, 'moveTop', {
-			value: () => {
-				auxiliaryWindow.vscode.ipcRenderer.send('vscode:moveAuxiliaryWindowTop');
-			},
-			writable: false,
-			enumerable: false,
-			configurable: false
-		});
 	}
 }
 

@@ -10,7 +10,7 @@ import { IProgressIndicator } from 'vs/platform/progress/common/progress';
 import { Extensions, PaneComposite, PaneCompositeDescriptor, PaneCompositeRegistry } from 'vs/workbench/browser/panecomposite';
 import { IPaneComposite } from 'vs/workbench/common/panecomposite';
 import { IViewDescriptorService, ViewContainerLocation } from 'vs/workbench/common/views';
-import { MutableDisposable } from 'vs/base/common/lifecycle';
+import { DisposableStore, MutableDisposable } from 'vs/base/common/lifecycle';
 import { IView } from 'vs/base/browser/ui/grid/grid';
 import { IWorkbenchLayoutService, Parts } from 'vs/workbench/services/layout/browser/layoutService';
 import { CompositePart, ICompositeTitleLabel } from 'vs/workbench/browser/parts/compositePart';
@@ -31,13 +31,14 @@ import { EDITOR_DRAG_AND_DROP_BACKGROUND } from 'vs/workbench/common/theme';
 import { IPartOptions } from 'vs/workbench/browser/part';
 import { ToolBar } from 'vs/base/browser/ui/toolbar/toolbar';
 import { CompositeMenuActions } from 'vs/workbench/browser/actions';
-import { MenuId, SubmenuItemAction } from 'vs/platform/actions/common/actions';
+import { IMenuService, MenuId } from 'vs/platform/actions/common/actions';
 import { ActionsOrientation, prepareActions } from 'vs/base/browser/ui/actionbar/actionbar';
 import { Gesture, EventType as GestureEventType } from 'vs/base/browser/touch';
 import { StandardMouseEvent } from 'vs/base/browser/mouseEvent';
-import { IAction, Separator, SubmenuAction } from 'vs/base/common/actions';
+import { IAction, SubmenuAction } from 'vs/base/common/actions';
 import { Composite } from 'vs/workbench/browser/composite';
 import { ViewsSubMenu } from 'vs/workbench/browser/parts/views/viewPaneContainer';
+import { createAndFillInActionBarActions } from 'vs/platform/actions/browser/menuEntryActionViewItem';
 
 export interface IPaneCompositePart extends IView {
 
@@ -136,6 +137,7 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
 		@IContextKeyService protected readonly contextKeyService: IContextKeyService,
 		@IExtensionService private readonly extensionService: IExtensionService,
+		@IMenuService protected readonly menuService: IMenuService,
 	) {
 		let location = ViewContainerLocation.Sidebar;
 		let registryId = Extensions.Viewlets;
@@ -481,25 +483,8 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 	}
 
 	private onTitleAreaContextMenu(event: StandardMouseEvent): void {
-
 		if (this.shouldShowCompositeBar() && this.paneCompositeBar.value) {
 			const actions: IAction[] = [...this.paneCompositeBar.value.getContextMenuActions()];
-
-			const viewsActions: IAction[] = [];
-			const activePaneComposite = this.getActivePaneComposite() as PaneComposite;
-			const activePaneCompositeActions = activePaneComposite ? activePaneComposite.getSecondaryActions() : [];
-			const viewsSubmenuAction = activePaneCompositeActions.find(action => action instanceof SubmenuItemAction && action.item.submenu === ViewsSubMenu) as SubmenuItemAction | undefined;
-			if (viewsSubmenuAction) {
-				viewsActions.push(...viewsSubmenuAction.actions);
-			} else {
-				viewsActions.push(...activePaneCompositeActions);
-			}
-
-			if (viewsActions.length > 1) {
-				actions.push(new Separator());
-				actions.push(new SubmenuAction('views', localize('views', "Views"), viewsActions));
-			}
-
 			if (actions.length) {
 				this.contextMenuService.showContextMenu({
 					getAnchor: () => event,
@@ -519,8 +504,22 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 					skipTelemetry: true
 				});
 			}
-
 		}
+	}
+
+	protected getViewsSubmenuAction(): SubmenuAction | undefined {
+		const viewPaneContainer = (this.getActivePaneComposite() as PaneComposite)?.getViewPaneContainer();
+		if (viewPaneContainer) {
+			const disposables = new DisposableStore();
+			const viewsActions: IAction[] = [];
+			const scopedContextKeyService = disposables.add(this.contextKeyService.createScoped(this.element));
+			scopedContextKeyService.createKey('viewContainer', viewPaneContainer.viewContainer.id);
+			const menu = disposables.add(this.menuService.createMenu(ViewsSubMenu, scopedContextKeyService));
+			createAndFillInActionBarActions(menu, { shouldForwardArgs: true, renderShortTitle: true }, { primary: viewsActions, secondary: [] }, () => true);
+			disposables.dispose();
+			return viewsActions.length > 1 && viewsActions.some(a => a.enabled) ? new SubmenuAction('views', localize('views', "Views"), viewsActions) : undefined;
+		}
+		return undefined;
 	}
 
 	protected abstract shouldShowCompositeBar(): boolean;
